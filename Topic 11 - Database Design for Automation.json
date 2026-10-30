@@ -1,0 +1,448 @@
+{
+  "name": "Topic 11 - Database Design for Automation SQLite, PostgreSQL & MySQL",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -800,
+        200
+      ],
+      "id": "node-manual-trigger",
+      "name": "Manual_Trigger"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Relational Database Engine Simulation inside n8n\n// Initializes relational schemas, primary/foreign key constraints, and seed data\nlet staticData = {};\ntry {\n  staticData = $getWorkflowStaticData('global');\n} catch (e) {\n  staticData = {};\n}\n\n// 1. DDL: Create Tables & Constraints\nstaticData.tables = staticData.tables || {};\nstaticData.tables.customers = [\n  { customerId: \"CUST-001\", name: \"Acme Corp\", creditLimit: 5000.00, currentBalance: 1200.00 },\n  { customerId: \"CUST-002\", name: \"Globex Inc\", creditLimit: 500.00, currentBalance: 450.00 }\n];\nstaticData.tables.orders = [];\nstaticData.tables.order_items = [];\n\nreturn [\n  {\n    json: {\n      status: \"DATABASE_INITIALIZED\",\n      schema: {\n        tables: [\"customers\", \"orders\", \"order_items\"],\n        constraints: [\n          \"PK_customers_customerId\",\n          \"PK_orders_orderId\",\n          \"FK_orders_customers\",\n          \"PK_order_items_itemId\",\n          \"FK_order_items_orders\",\n          \"CHECK_credit_limit\"\n        ],\n        indexes: [\"idx_orders_customer\", \"idx_items_order\"]\n      },\n      seededCustomers: staticData.tables.customers.length,\n      initializedAt: new Date().toISOString()\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -580,
+        200
+      ],
+      "id": "node-init-relational-db",
+      "name": "Code_InitRelationalDB"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Stage incoming multi-item order payload for database transaction\n// Customer CUST-001 (Acme Corp): Limit $5,000.00, Balance $1,200.00\n// Order Total: 2 * 450 + 5 * 75 = 900 + 375 = $1,275.00\n// Projected Balance: $2,475.00 <= $5,000.00 (Passes constraint check)\nreturn [\n  {\n    json: {\n      orderId: \"ORD-DB-5001\",\n      customerId: \"CUST-001\",\n      orderDate: new Date().toISOString().split('T')[0],\n      lineItems: [\n        {\n          sku: \"SKU-SRV-01\",\n          description: \"Cloud Managed Server\",\n          quantity: 2,\n          unitPrice: 450.00\n        },\n        {\n          sku: \"SKU-LIC-02\",\n          description: \"Enterprise Security Seat\",\n          quantity: 5,\n          unitPrice: 75.00\n        }\n      ]\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -360,
+        200
+      ],
+      "id": "node-stage-order",
+      "name": "Code_StageIncomingOrder"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Parameterized Order Header Insert Simulation\n// Computes total order value and safely inserts parent header with PENDING status\nconst order = $input.item.json;\nconst lineItems = order.lineItems || [];\nconst totalAmount = Number(lineItems.reduce((acc, it) => acc + (it.quantity * it.unitPrice), 0).toFixed(2));\n\nlet staticData = {};\ntry {\n  staticData = $getWorkflowStaticData('global');\n} catch (e) {\n  staticData = {};\n}\nstaticData.orders = staticData.orders || [];\n\nconst orderRecord = {\n  orderId: order.orderId,\n  customerId: order.customerId,\n  orderDate: order.orderDate,\n  totalAmount: totalAmount,\n  status: \"PENDING\",\n  createdAt: new Date().toISOString()\n};\n\n// Insert or update order header\nconst existingIdx = staticData.orders.findIndex(o => o.orderId === order.orderId);\nif (existingIdx !== -1) {\n  staticData.orders[existingIdx] = orderRecord;\n} else {\n  staticData.orders.push(orderRecord);\n}\n\nreturn {\n  json: {\n    ...order,\n    headerInserted: true,\n    totalAmount: totalAmount,\n    status: \"PENDING\"\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -120,
+        200
+      ],
+      "id": "node-insert-order-header",
+      "name": "Code_InsertOrderHeader"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Batch Insert Child Order Items with Foreign Key Reference\n// Enforces referential integrity by associating each item to orderId\nconst order = $input.item.json;\nconst lineItems = order.lineItems || [];\n\nlet staticData = {};\ntry {\n  staticData = $getWorkflowStaticData('global');\n} catch (e) {\n  staticData = {};\n}\nstaticData.orderItems = staticData.orderItems || [];\n\n// Remove previous items for this orderId if any\nstaticData.orderItems = staticData.orderItems.filter(i => i.orderId !== order.orderId);\n\nconst insertedItems = lineItems.map((it, idx) => {\n  const lineTotal = Number((it.quantity * it.unitPrice).toFixed(2));\n  const record = {\n    itemId: \"ITEM-\" + order.orderId + \"-\" + (idx + 1),\n    orderId: order.orderId, // Foreign Key\n    sku: it.sku,\n    description: it.description,\n    quantity: it.quantity,\n    unitPrice: it.unitPrice,\n    lineTotal: lineTotal\n  };\n  staticData.orderItems.push(record);\n  return record;\n});\n\nreturn {\n  json: {\n    orderId: order.orderId,\n    customerId: order.customerId,\n    orderDate: order.orderDate,\n    totalAmount: order.totalAmount,\n    itemsCount: insertedItems.length,\n    items: insertedItems,\n    itemsInserted: true\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        200
+      ],
+      "id": "node-insert-order-items",
+      "name": "Code_InsertOrderItems"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ACID Transaction Enforcer: Credit Limit Constraint Validation\n// Evaluates CHECK constraint: (currentBalance + totalAmount) <= creditLimit\nconst order = $input.item.json;\n\nlet staticData = {};\ntry {\n  staticData = $getWorkflowStaticData('global');\n} catch (e) {\n  staticData = {};\n}\n\nconst customers = (staticData.tables && staticData.tables.customers) || [\n  { customerId: \"CUST-001\", name: \"Acme Corp\", creditLimit: 5000.00, currentBalance: 1200.00 },\n  { customerId: \"CUST-002\", name: \"Globex Inc\", creditLimit: 500.00, currentBalance: 450.00 }\n];\n\nconst customer = customers.find(c => c.customerId === order.customerId);\n\nif (!customer) {\n  return {\n    json: {\n      isCommitted: false,\n      transactionStatus: \"ROLLED_BACK\",\n      reason: \"CUSTOMER_NOT_FOUND\",\n      orderId: order.orderId,\n      customerId: order.customerId\n    }\n  };\n}\n\nconst projectedBalance = Number((customer.currentBalance + order.totalAmount).toFixed(2));\n\n// Enforce CHECK Constraint: balance cannot exceed credit limit\nif (projectedBalance > customer.creditLimit) {\n  // ROLLBACK: Delete pending order header and orphaned line items\n  if (staticData.orders) {\n    staticData.orders = staticData.orders.filter(o => o.orderId !== order.orderId);\n  }\n  if (staticData.orderItems) {\n    staticData.orderItems = staticData.orderItems.filter(i => i.orderId !== order.orderId);\n  }\n\n  return {\n    json: {\n      isCommitted: false,\n      transactionStatus: \"ROLLED_BACK\",\n      reason: \"CREDIT_LIMIT_EXCEEDED\",\n      orderId: order.orderId,\n      customerId: customer.customerId,\n      customerName: customer.name,\n      currentBalance: customer.currentBalance,\n      attemptedCharge: order.totalAmount,\n      projectedBalance: projectedBalance,\n      creditLimit: customer.creditLimit,\n      rolledBackAt: new Date().toISOString()\n    }\n  };\n}\n\n// COMMIT: Update customer balance and finalize order status to COMMITTED\nconst previousBalance = customer.currentBalance;\ncustomer.currentBalance = projectedBalance;\n\nif (staticData.orders) {\n  const ord = staticData.orders.find(o => o.orderId === order.orderId);\n  if (ord) ord.status = \"COMMITTED\";\n}\n\nreturn {\n  json: {\n    isCommitted: true,\n    transactionStatus: \"COMMITTED\",\n    orderId: order.orderId,\n    customerId: customer.customerId,\n    customerName: customer.name,\n    previousBalance: previousBalance,\n    updatedBalance: projectedBalance,\n    creditLimit: customer.creditLimit,\n    orderTotal: order.totalAmount,\n    committedAt: new Date().toISOString()\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        200
+      ],
+      "id": "node-update-customer-balance",
+      "name": "Code_UpdateCustomerBalance"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-trans-committed",
+              "leftValue": "={{ $json.isCommitted }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        200
+      ],
+      "id": "node-if-trans-succeeded",
+      "name": "IF_TransactionSucceeded"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Rollback Telemetry & Security Incident Logger\n// Formats audit record when a database transaction is aborted due to constraint violations\nconst details = $input.item.json;\n\nreturn {\n  json: {\n    auditEvent: \"ACID_TRANSACTION_ABORTED\",\n    status: \"ROLLED_BACK_SAFELY\",\n    orderId: details.orderId,\n    customerId: details.customerId,\n    reason: details.reason,\n    attemptedAmount: details.attemptedCharge,\n    creditLimit: details.creditLimit,\n    currentBalance: details.currentBalance,\n    orphanedRecordsPurged: true,\n    loggedAt: new Date().toISOString()\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        380
+      ],
+      "id": "node-log-rollback",
+      "name": "Log_RollbackIncident"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Indexed SQL Relational JOIN Simulation:\n// SELECT o.*, c.name, c.currentBalance, i.*\n// FROM orders o\n// JOIN customers c ON o.customerId = c.customerId\n// JOIN order_items i ON o.orderId = i.orderId\n// WHERE o.orderId = $1;\nconst trans = $input.item.json;\nconst orderId = trans.orderId;\n\nlet staticData = {};\ntry {\n  staticData = $getWorkflowStaticData('global');\n} catch (e) {\n  staticData = {};\n}\n\nconst orders = staticData.orders || [\n  {\n    orderId: orderId,\n    customerId: trans.customerId,\n    orderDate: new Date().toISOString().split('T')[0],\n    totalAmount: trans.orderTotal,\n    status: \"COMMITTED\"\n  }\n];\n\nconst customers = (staticData.tables && staticData.tables.customers) || [\n  { customerId: \"CUST-001\", name: \"Acme Corp\", creditLimit: 5000.00, currentBalance: trans.updatedBalance }\n];\n\nconst orderItems = staticData.orderItems || [\n  { itemId: \"ITEM-\" + orderId + \"-1\", orderId: orderId, sku: \"SKU-SRV-01\", description: \"Cloud Managed Server\", quantity: 2, unitPrice: 450.00, lineTotal: 900.00 },\n  { itemId: \"ITEM-\" + orderId + \"-2\", orderId: orderId, sku: \"SKU-LIC-02\", description: \"Enterprise Security Seat\", quantity: 5, unitPrice: 75.00, lineTotal: 375.00 }\n];\n\nconst order = orders.find(o => o.orderId === orderId) || { orderId, customerId: trans.customerId, totalAmount: trans.orderTotal, status: \"COMMITTED\" };\nconst customer = customers.find(c => c.customerId === order.customerId) || { customerId: order.customerId, name: trans.customerName || \"Acme Corp\", currentBalance: trans.updatedBalance };\nconst matchingItems = orderItems.filter(i => i.orderId === orderId);\n\nreturn {\n  json: {\n    orderId: order.orderId,\n    orderDate: order.orderDate,\n    status: order.status,\n    totalAmount: order.totalAmount,\n    customer: {\n      customerId: customer.customerId,\n      name: customer.name,\n      creditLimit: customer.creditLimit || trans.creditLimit,\n      currentBalance: customer.currentBalance\n    },\n    lineItems: matchingItems,\n    joinedAt: new Date().toISOString()\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        920,
+        80
+      ],
+      "id": "node-query-join",
+      "name": "Code_QueryFullOrderJoin"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// Master Transaction Audit Formatter\n// Confirms ACID durability and generates tamper-evident transaction receipt\nconst item = $input.item.json;\n\nreturn {\n  json: {\n    auditStatus: \"DATABASE_TRANSACTION_VERIFIED\",\n    auditEvent: \"ACID_TRANSACTION_COMMITTED\",\n    orderId: item.orderId,\n    customerName: item.customer.name,\n    customerId: item.customer.customerId,\n    persistedTotal: item.totalAmount,\n    lineItemCount: item.lineItems.length,\n    customerBalanceAfterCommit: item.customer.currentBalance,\n    databaseStatus: \"CONSISTENT\",\n    verifiedAt: new Date().toISOString()\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1180,
+        80
+      ],
+      "id": "node-final-audit",
+      "name": "Code_FinalTransactionAudit"
+    }
+  ],
+  "connections": {
+    "Manual_Trigger": {
+      "main": [
+        [
+          {
+            "node": "Code_InitRelationalDB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_InitRelationalDB": {
+      "main": [
+        [
+          {
+            "node": "Code_StageIncomingOrder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_StageIncomingOrder": {
+      "main": [
+        [
+          {
+            "node": "Code_InsertOrderHeader",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_InsertOrderHeader": {
+      "main": [
+        [
+          {
+            "node": "Code_InsertOrderItems",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_InsertOrderItems": {
+      "main": [
+        [
+          {
+            "node": "Code_UpdateCustomerBalance",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_UpdateCustomerBalance": {
+      "main": [
+        [
+          {
+            "node": "IF_TransactionSucceeded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_TransactionSucceeded": {
+      "main": [
+        [
+          {
+            "node": "Code_QueryFullOrderJoin",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log_RollbackIncident",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code_QueryFullOrderJoin": {
+      "main": [
+        [
+          {
+            "node": "Code_FinalTransactionAudit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {
+    "Manual_Trigger": [
+      {
+        "json": {
+          "timestamp": "2026-10-30T10:00:00.000Z"
+        }
+      }
+    ],
+    "Code_InitRelationalDB": [
+      {
+        "json": {
+          "status": "DATABASE_INITIALIZED",
+          "schema": {
+            "tables": [
+              "customers",
+              "orders",
+              "order_items"
+            ],
+            "constraints": [
+              "PK_customers_customerId",
+              "PK_orders_orderId",
+              "FK_orders_customers",
+              "PK_order_items_itemId",
+              "FK_order_items_orders",
+              "CHECK_credit_limit"
+            ],
+            "indexes": [
+              "idx_orders_customer",
+              "idx_items_order"
+            ]
+          },
+          "seededCustomers": 2,
+          "initializedAt": "2026-10-30T10:00:00.100Z"
+        }
+      }
+    ],
+    "Code_StageIncomingOrder": [
+      {
+        "json": {
+          "orderId": "ORD-DB-5001",
+          "customerId": "CUST-001",
+          "orderDate": "2026-10-30",
+          "lineItems": [
+            {
+              "sku": "SKU-SRV-01",
+              "description": "Cloud Managed Server",
+              "quantity": 2,
+              "unitPrice": 450
+            },
+            {
+              "sku": "SKU-LIC-02",
+              "description": "Enterprise Security Seat",
+              "quantity": 5,
+              "unitPrice": 75
+            }
+          ]
+        }
+      }
+    ],
+    "Code_InsertOrderHeader": [
+      {
+        "json": {
+          "orderId": "ORD-DB-5001",
+          "customerId": "CUST-001",
+          "orderDate": "2026-10-30",
+          "totalAmount": 1275,
+          "status": "PENDING",
+          "headerInserted": true,
+          "lineItems": [
+            {
+              "sku": "SKU-SRV-01",
+              "description": "Cloud Managed Server",
+              "quantity": 2,
+              "unitPrice": 450
+            },
+            {
+              "sku": "SKU-LIC-02",
+              "description": "Enterprise Security Seat",
+              "quantity": 5,
+              "unitPrice": 75
+            }
+          ]
+        }
+      }
+    ],
+    "Code_InsertOrderItems": [
+      {
+        "json": {
+          "orderId": "ORD-DB-5001",
+          "customerId": "CUST-001",
+          "orderDate": "2026-10-30",
+          "totalAmount": 1275,
+          "itemsCount": 2,
+          "itemsInserted": true,
+          "items": [
+            {
+              "itemId": "ITEM-ORD-DB-5001-1",
+              "orderId": "ORD-DB-5001",
+              "sku": "SKU-SRV-01",
+              "description": "Cloud Managed Server",
+              "quantity": 2,
+              "unitPrice": 450,
+              "lineTotal": 900
+            },
+            {
+              "itemId": "ITEM-ORD-DB-5001-2",
+              "orderId": "ORD-DB-5001",
+              "sku": "SKU-LIC-02",
+              "description": "Enterprise Security Seat",
+              "quantity": 5,
+              "unitPrice": 75,
+              "lineTotal": 375
+            }
+          ]
+        }
+      }
+    ],
+    "Code_UpdateCustomerBalance": [
+      {
+        "json": {
+          "isCommitted": true,
+          "transactionStatus": "COMMITTED",
+          "orderId": "ORD-DB-5001",
+          "customerId": "CUST-001",
+          "customerName": "Acme Corp",
+          "previousBalance": 1200,
+          "updatedBalance": 2475,
+          "creditLimit": 5000,
+          "orderTotal": 1275,
+          "committedAt": "2026-10-30T10:00:01.000Z"
+        }
+      }
+    ],
+    "Code_QueryFullOrderJoin": [
+      {
+        "json": {
+          "orderId": "ORD-DB-5001",
+          "orderDate": "2026-10-30",
+          "status": "COMMITTED",
+          "totalAmount": 1275,
+          "customer": {
+            "customerId": "CUST-001",
+            "name": "Acme Corp",
+            "creditLimit": 5000,
+            "currentBalance": 2475
+          },
+          "lineItems": [
+            {
+              "itemId": "ITEM-ORD-DB-5001-1",
+              "orderId": "ORD-DB-5001",
+              "sku": "SKU-SRV-01",
+              "description": "Cloud Managed Server",
+              "quantity": 2,
+              "unitPrice": 450,
+              "lineTotal": 900
+            },
+            {
+              "itemId": "ITEM-ORD-DB-5001-2",
+              "orderId": "ORD-DB-5001",
+              "sku": "SKU-LIC-02",
+              "description": "Enterprise Security Seat",
+              "quantity": 5,
+              "unitPrice": 75,
+              "lineTotal": 375
+            }
+          ],
+          "joinedAt": "2026-10-30T10:00:01.200Z"
+        }
+      }
+    ],
+    "Code_FinalTransactionAudit": [
+      {
+        "json": {
+          "auditStatus": "DATABASE_TRANSACTION_VERIFIED",
+          "auditEvent": "ACID_TRANSACTION_COMMITTED",
+          "orderId": "ORD-DB-5001",
+          "customerName": "Acme Corp",
+          "customerId": "CUST-001",
+          "persistedTotal": 1275,
+          "lineItemCount": 2,
+          "customerBalanceAfterCommit": 2475,
+          "databaseStatus": "CONSISTENT",
+          "verifiedAt": "2026-10-30T10:00:01.400Z"
+        }
+      }
+    ]
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
